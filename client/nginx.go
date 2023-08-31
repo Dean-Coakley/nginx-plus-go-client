@@ -14,9 +14,6 @@ import (
 )
 
 const (
-	// APIVersion is the default version of NGINX Plus API supported by the client.
-	APIVersion = 9
-
 	pathNotFoundCode  = "PathNotFound"
 	streamContext     = true
 	httpContext       = false
@@ -24,7 +21,14 @@ const (
 )
 
 var (
-	supportedAPIVersions = versions{4, 5, 6, 7, 8, 9}
+	supportedAPIVersions = map[int]struct{}{
+		4: {},
+		5: {},
+		6: {},
+		7: {},
+		8: {},
+		9: {},
+	}
 
 	// Default values for servers in Upstreams.
 	defaultMaxConns    = 0
@@ -45,8 +49,6 @@ type NginxClient struct {
 	apiEndpoint string
 	httpClient  *http.Client
 }
-
-type versions []int
 
 // UpstreamServer lets you configure HTTP upstreams.
 type UpstreamServer struct {
@@ -508,22 +510,31 @@ type WorkersHTTP struct {
 	HTTPRequests HTTPRequests `json:"requests"`
 }
 
-// NewNginxClient creates an NginxClient with the latest supported version.
+// NewNginxClient creates an NginxClient with the latest supported api version available at the apiEndpoint.
 func NewNginxClient(httpClient *http.Client, apiEndpoint string) (*NginxClient, error) {
-	return NewNginxClientWithVersion(httpClient, apiEndpoint, APIVersion)
-}
-
-// NewNginxClientWithVersion creates an NginxClient with the given version of NGINX Plus API.
-func NewNginxClientWithVersion(httpClient *http.Client, apiEndpoint string, version int) (*NginxClient, error) {
-	if !versionSupported(version) {
-		return nil, fmt.Errorf("API version %v is not supported by the client", version)
-	}
 	versions, err := getAPIVersions(httpClient, apiEndpoint)
 	if err != nil {
 		return nil, fmt.Errorf("error accessing the API: %w", err)
 	}
+
+	latestApiVersion := versions[len(versions)-1]
+
+	return NewNginxClientWithVersion(httpClient, apiEndpoint, latestApiVersion)
+}
+
+// NewNginxClientWithVersion creates an NginxClient with the given version of NGINX Plus API.
+func NewNginxClientWithVersion(httpClient *http.Client, apiEndpoint string, version int) (*NginxClient, error) {
+	if _, supported := supportedAPIVersions[version]; !supported {
+		return nil, fmt.Errorf("API version %v is not supported by the client", version)
+	}
+
+	versions, err := getAPIVersions(httpClient, apiEndpoint)
+	if err != nil {
+		return nil, fmt.Errorf("error accessing the API: %w", err)
+	}
+
 	found := false
-	for _, v := range *versions {
+	for _, v := range versions {
 		if v == version {
 			found = true
 			break
@@ -532,6 +543,7 @@ func NewNginxClientWithVersion(httpClient *http.Client, apiEndpoint string, vers
 	if !found {
 		return nil, ErrUnsupportedVer
 	}
+
 	return &NginxClient{
 		apiEndpoint: apiEndpoint,
 		httpClient:  httpClient,
@@ -539,16 +551,7 @@ func NewNginxClientWithVersion(httpClient *http.Client, apiEndpoint string, vers
 	}, nil
 }
 
-func versionSupported(n int) bool {
-	for _, version := range supportedAPIVersions {
-		if n == version {
-			return true
-		}
-	}
-	return false
-}
-
-func getAPIVersions(httpClient *http.Client, endpoint string) (*versions, error) {
+func getAPIVersions(httpClient *http.Client, endpoint string) ([]int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -556,6 +559,7 @@ func getAPIVersions(httpClient *http.Client, endpoint string) (*versions, error)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create a get request: %w", err)
 	}
+
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%v is not accessible: %w", endpoint, err)
@@ -571,13 +575,13 @@ func getAPIVersions(httpClient *http.Client, endpoint string) (*versions, error)
 		return nil, fmt.Errorf("error while reading body of the response: %w", err)
 	}
 
-	var vers versions
+	var vers []int
 	err = json.Unmarshal(body, &vers)
 	if err != nil {
 		return nil, fmt.Errorf("error unmarshalling versions, got %q response: %w", string(body), err)
 	}
 
-	return &vers, nil
+	return vers, nil
 }
 
 func createResponseMismatchError(respBody io.ReadCloser) *internalError {
